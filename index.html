@@ -4,18 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>CritCare Bedside — UCI Critical Care Suite</title>
-  <meta name="description" content="Herramienta integral de soporte a la decisión clínica en UCI. Calculadora hemodinámica, SOFA-2, APACHE II, KDIGO 2026, ANDROMEDA-SHOCK-2, Atlas PPG.">
+  <meta name="description" content="Herramienta integral de soporte a la decisión clínica en UCI.">
   <meta name="theme-color" content="#06101e">
-  <link rel="manifest" crossorigin="use-credentials">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫀</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #06101e; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
     #root { min-height: 100vh; }
-    /* PWA install banner hide */
-    @media (display-mode: standalone) { body { padding-top: env(safe-area-inset-top); } }
   </style>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -126,17 +122,46 @@ function calculate(v){
   // A-a gradient
   if(pao2!==null&&fio2!==null&&paco2!==null&&patm){const pAlv=(fio2/100)*(patm-47)-paco2/0.8;const aa=Math.round(pAlv-pao2);const eAa=age?Math.round(2.5+0.21*age):null;R.calc.push({l:"Gradiente A-a",v:`${aa} mmHg`,f:`PAO2[${Math.round(pAlv)}]−PaO2`,c:eAa&&aa>eAa?"#f59e0b":"#22c55e"});if(eAa)R.calc.push({l:"A-a esperado",v:`≤${eAa}`,f:"2.5+0.21×Edad",c:aa>eAa?"#f59e0b":"#22c55e"});}
 
-  // VENT MECHANICS (pressure vs volume mode)
-  if(pplat!==null&&peep!==null){
-    const dp=pplat-peep;R.calc.push({l:"Driving Pressure",v:`${dp} cmH₂O`,f:ventMode==="pressure"?"ΔP=Presión sobre PEEP programada":"Pplat−PEEP",c:dp>15?"#ef4444":"#22c55e"});
-    if(dp>15)R.refs.push("Amato MBP. NEJM. 2015;372(8):747.");
-    if(vt!==null&&dp>0){const cst=Math.round(vt/dp);R.calc.push({l:"Compliance estática",v:`${cst} mL/cmH₂O`,f:"Vt/ΔP",c:cst<30?"#ef4444":"#22c55e"});
-      if(ventMode==="pressure")R.interp.push({t:`Modo PRESIÓN: ΔP está fija (= presión sobre PEEP programada). El Vt resultante (${vt}mL) depende de la compliance. Si Vt excesivo: ↓presión sobre PEEP. Si Vt insuficiente: evaluar causa de ↓compliance`,c:"#3b82f6"});
-      else R.interp.push({t:`Modo VOLUMEN: Vt fijo (${vt}mL). ΔP resultante (${dp}) refleja compliance. Si ΔP>15: ↓Vt o ↑PEEP (reclutamiento). Meta ΔP≤15, Pplat<30`,c:"#3b82f6"});}}
-  if(rr!==null&&vt!==null&&ppeak!==null&&pplat!==null&&peep!==null){const dp2=pplat-peep;const mp=(0.098*rr*(vt/1000)*(ppeak-dp2/2)).toFixed(1);R.calc.push({l:"Poder Mecánico",v:`${mp} J/min`,f:"0.098×FR×Vt×(Ppico−ΔP/2)",c:mp>17?"#ef4444":"#22c55e"});if(mp>17)R.interp.push({t:`PM ${mp}>17 J/min: asociado a VILI y mortalidad. ${ventMode==="pressure"?"En modo presión: ↓presión sobre PEEP y/o FR":"En modo volumen: ↓Vt y/o FR"} (Serpa Neto, ICM 2018)`,c:"#ef4444"});}
+  // VENT MECHANICS — mode-dependent calculations
+  const pOP=n("pOverPeep");const iFlow=n("inspFlow");
+  // In PCV: if pOverPeep is given but pplat is not, derive pplat = PEEP + pOverPeep
+  let effPplat=pplat;
+  if(ventMode==="pressure"&&pOP!==null&&peep!==null&&effPplat===null)effPplat=peep+pOP;
+  
+  if(effPplat!==null&&peep!==null){
+    const dp=ventMode==="pressure"&&pOP!==null?pOP:effPplat-peep;
+    R.calc.push({l:"Driving Pressure (ΔP)",v:`${dp} cmH₂O`,f:ventMode==="pressure"?"Presión sobre PEEP (programada)":"Pplat−PEEP (resultante)",c:dp>15?"#ef4444":dp>13?"#f59e0b":"#22c55e"});
+    if(dp>15){R.alerts.push({lv:"warning",t:`ΔP ${dp} cmH₂O >15 — asociada independientemente a mortalidad en SDRA`});R.refs.push("Amato MBP. NEJM. 2015;372(8):747.");}
+    if(effPplat>30)R.alerts.push({lv:"warning",t:`Pplat ${effPplat} >30 cmH₂O — riesgo de barotrauma. Meta Pplat <30`});
+    
+    // Static compliance
+    if(vt!==null&&dp>0){const cst=Math.round(vt/dp);R.calc.push({l:"Compliance estática (Cst)",v:`${cst} mL/cmH₂O`,f:"Vt/(Pplat−PEEP)",c:cst<30?"#ef4444":cst<40?"#f59e0b":"#22c55e"});
+      if(cst<30)R.interp.push({t:`Cst ${cst}: severamente reducida (<30). Causas: SDRA severo, edema pulmonar, atelectasia extensa, neumotórax, fibrosis, obesidad mórbida, distensión abdominal`,c:"#ef4444"});}
+    
+    // Dynamic compliance
+    if(vt!==null&&ppeak!==null&&peep!==null){const cdyn=Math.round(vt/(ppeak-peep));R.calc.push({l:"Compliance dinámica (Cdyn)",v:`${cdyn} mL/cmH₂O`,f:"Vt/(Ppico−PEEP)",c:cdyn<25?"#ef4444":"#22c55e"});
+      if(vt!==null&&dp>0){const cst2=Math.round(vt/dp);if(cdyn<cst2*0.7)R.interp.push({t:`Cdyn (${cdyn}) << Cst (${cst2}): diferencia significativa → ↑resistencia de vía aérea (broncoespasmo, secreciones, tubo obstruido/acodado). Evaluar aspiración, broncodilatadores`,c:"#f59e0b"});}}
+    
+    // Airway resistance
+    if(ppeak!==null&&effPplat!==null&&iFlow!==null&&iFlow>0){const raw=((ppeak-effPplat)/(iFlow/60)).toFixed(1);R.calc.push({l:"Resistencia vía aérea (Raw)",v:`${raw} cmH₂O/L/s`,f:"(Ppico−Pplat)/Flujo",c:raw>15?"#ef4444":raw>10?"#f59e0b":"#22c55e"});
+      if(raw>15)R.interp.push({t:`Raw ${raw} cmH₂O/L/s elevada (normal 5-10). Causas: broncoespasmo, secreciones, TET pequeño/obstruido, auto-PEEP. Evaluar aspiración, broncodilatadores, verificar TET`,c:"#ef4444"});}
+    else if(ppeak!==null&&effPplat!==null&&ventMode==="volume"){const rawEst=ppeak-effPplat;R.calc.push({l:"Ppico−Pplat (≈resistencia)",v:`${rawEst} cmH₂O`,f:"Estimación sin flujo",c:rawEst>10?"#f59e0b":"#22c55e"});}
+    
+    // Mode-specific interpretation
+    if(ventMode==="pressure")R.interp.push({t:`MODO PRESIÓN CONTROLADA: ΔP fija (${dp} cmH₂O programada). Vt resultante (${vt||"?"} mL) depende de Cst.\n• Si Vt excesivo: ↓presión sobre PEEP\n• Si Vt insuficiente: evaluar causa de ↓compliance (atelectasia, edema, derrame)\n• Ppico ≈ Pplat en flujo desacelerado (típico de PCV)\n• Ventaja: limita barotrauma. Desventaja: Vt variable con cambios de compliance`,c:"#3b82f6"});
+    else R.interp.push({t:`MODO VOLUMEN CONTROLADO: Vt fijo (${vt||"?"} mL). ΔP resultante (${dp}) refleja compliance.\n• ΔP >15: ↓Vt (meta 6 mL/kg PBW en SDRA) o ↑PEEP (reclutamiento)\n• Meta: Pplat <30, ΔP ≤15\n• Ppico > Pplat: la diferencia refleja resistencia de vía aérea\n• Ventaja: Vt garantizado. Desventaja: riesgo de presiones elevadas si ↓compliance`,c:"#3b82f6"});}
+  
+  // Mechanical power
+  if(rr!==null&&vt!==null&&ppeak!==null&&peep!==null){
+    const effDP=(effPplat!==null&&peep!==null)?effPplat-peep:(pOP||0);
+    if(effDP>0){const mp=(0.098*rr*(vt/1000)*(ppeak-effDP/2)).toFixed(1);R.calc.push({l:"Poder Mecánico",v:`${mp} J/min`,f:"0.098×FR×Vt×(Ppico−ΔP/2)",c:mp>17?"#ef4444":mp>12?"#f59e0b":"#22c55e"});
+      if(mp>17){R.interp.push({t:`PM ${mp} J/min >17: asociado a VILI y mortalidad.\n${ventMode==="pressure"?"• En PCV: ↓presión sobre PEEP y/o ↓FR":"• En VCV: ↓Vt y/o ↓FR"}\n• Componentes del PM: Vt, FR, ΔP, PEEP, Ppico, flujo\n• Evaluar cuál componente es más reducible sin comprometer intercambio gaseoso`,c:"#ef4444"});R.refs.push("Serpa Neto A. ICM. 2018;44:1914.");}}}
 
   // CO2 CORRECTION
-  if(paco2!==null&&rr!==null&&vt!==null){const mv=rr*(vt/1000);R.calc.push({l:"Vol. minuto",v:`${mv.toFixed(1)} L/min`,f:"FR×Vt",c:"#8ab0c0"});const dMV=mv*paco2/40;if(paco2>45){const nRR=Math.ceil(dMV/(vt/1000)),nVt=Math.round(dMV*1000/rr);R.interp.push({t:`Corrección CO2 (${paco2}→40): ↑FR a ~${nRR} O ↑Vt a ~${nVt}mL. SDRA: hipercapnia permisiva si pH>7.20`,c:"#3b82f6"});}if(paco2<35){const nRR2=Math.max(8,Math.floor(dMV/(vt/1000)));R.interp.push({t:`PaCO2 baja (${paco2}): ↓FR a ~${nRR2}. Evaluar causa`,c:"#f59e0b"});}}
+  if(paco2!==null&&rr!==null&&vt!==null){const mv=rr*(vt/1000);R.calc.push({l:"Vol. minuto",v:`${mv.toFixed(1)} L/min`,f:"FR×Vt",c:"#8ab0c0"});const dMV=mv*paco2/40;
+    if(paco2>45){const nRR=Math.ceil(dMV/(vt/1000)),nVt=Math.round(dMV*1000/rr);
+      R.interp.push({t:`Corrección CO2 (${paco2}→40):\n${ventMode==="volume"?`• Opción A: ↑FR a ~${nRR} rpm (manteniendo Vt ${vt}mL)\n• Opción B: ↑Vt a ~${nVt} mL (manteniendo FR ${rr}) — verificar ΔP y Pplat`:`• En PCV: ↑FR a ~${nRR} rpm (Vt puede variar)\n• O ↑presión sobre PEEP (↑Vt resultante) — vigilar Pplat`}\n• SDRA: considerar hipercapnia permisiva si pH >7.20\n• ⚠ FR alta → riesgo auto-PEEP → verificar con pausa espiratoria`,c:"#3b82f6"});}
+    if(paco2<35){const nRR2=Math.max(8,Math.floor(dMV/(vt/1000)));R.interp.push({t:`PaCO2 baja (${paco2}): ${ventMode==="volume"?`↓FR a ~${nRR2}`:"↓FR"} o evaluar causa de hiperventilación (dolor, ansiedad, acidosis metab. compensatoria, hipoxemia)`,c:"#f59e0b"});}}
 
   // ACID-BASE
   if(ph!==null)R.calc.push({l:"pH",v:ph.toFixed(2),f:"Directo",c:ph<7.2?"#ef4444":ph<7.35?"#f59e0b":ph>7.45?"#f59e0b":"#22c55e"});
@@ -178,13 +203,40 @@ function calculate(v){
   // APACHE II (restored)
   const ap=calcAPACHE(v);if(ap.filled>=4){R.calc.push({l:"APACHE II",v:`${ap.total}`,f:`APS:${ap.aps} +Edad:${ap.ageP} +Cr:${ap.chronic}`,c:ap.total>=25?"#ef4444":"#f59e0b"});R.interp.push({t:`APACHE II ${ap.total}: mort. ${ap.mort} (${ap.filled}/12 variables)`,c:ap.total>=25?"#ef4444":"#f59e0b"});R.refs.push("Knaus WA. APACHE II. Crit Care Med. 1985;13(10):818.");}
 
-  // ELECTROLYTE DEFICITS (new)
+  // ═══ ELECTROLYTE DEFICITS & CORRECTIONS ═══
   if(na!==null&&wt!==null){
-    if(na>145){const tBW=wt*(sex==="f"?0.5:0.6);const deficit=tBW*((na/140)-1);R.calc.push({l:"Déficit agua libre",v:`${deficit.toFixed(0)} mL`,f:`ACT×(Na/140−1)`,c:"#ef4444"});R.act.push(`Hipernatremia (Na ${na}): déficit ~${deficit.toFixed(0)}mL. Corregir con SG5% o agua libre VO. Velocidad: ↓Na máx 10 mEq/L/24h (8 en crónica). Monitorizar Na c/4-6h. Meta: Na 140 mEq/L`);}
-    if(na<130){const deficit2=wt*0.6*(130-na);R.calc.push({l:"Déficit de sodio",v:`${deficit2.toFixed(0)} mEq`,f:`0.6×Peso×(130−Na)`,c:"#f59e0b"});R.act.push(`Hiponatremia (Na ${na}): déficit ~${deficit2.toFixed(0)} mEq para meta Na 130. VELOCIDAD CRÍTICA: ↑Na máx 8 mEq/L/24h (riesgo mielinólisis pontina si >10-12/24h). Aguda sintomática: NaCl 3% 100mL en 10min ×3 si convulsión/herniación`);}
+    if(na>145){const tBW=wt*(sex==="f"?0.5:0.6);const deficit=tBW*((na/140)-1);
+      R.calc.push({l:"Déficit agua libre",v:`${deficit.toFixed(0)} mL`,f:`ACT[${tBW.toFixed(0)}L]×(Na/140−1)`,c:"#ef4444"});
+      const rate24=Math.min(deficit,tBW*10/na*1000);
+      R.act.push(`HIPERNATREMIA (Na⁺ ${na}):\n• Déficit de agua libre: ~${deficit.toFixed(0)} mL\n• Solución: SG5% IV o agua libre VO/SNG\n• VELOCIDAD: ↓Na máx 10 mEq/L en 24h (máx 8 en crónica >48h)\n• Infusión sugerida: ~${Math.round(deficit/24)} mL/h de agua libre (ajustar con Na c/4-6h)\n• Meta: Na 140-145 mEq/L\n• No olvidar pérdidas insensibles (~10 mL/kg/día) + diuresis\n• Si hipovolemia concomitante: SSN 0.9% primero, luego agua libre`);}
+    if(na<130){const deficit2=wt*0.6*(130-na);
+      R.calc.push({l:"Déficit de sodio",v:`${deficit2.toFixed(0)} mEq`,f:`0.6×Peso×(130−Na)`,c:"#f59e0b"});
+      const mlNaCl3=Math.round(deficit2/5.13*10);
+      R.act.push(`HIPONATREMIA (Na⁺ ${na}):\n• Déficit: ~${deficit2.toFixed(0)} mEq para meta Na 130\n• VELOCIDAD CRÍTICA: ↑Na máx 8 mEq/L en 24h (↑10-12 = riesgo mielinólisis pontina osmótica)\n${na<120?"• EMERGENCIA si sintomática (convulsión/herniación): NaCl 3% 100mL bolo en 10min, repetir ×3 si necesario":"• NaCl 3% a ~${Math.round(deficit2/5.13*10/24)} mL/h (cada mL de NaCl3% ≈ 0.513 mEq Na)"}\n• Na sérico c/2-4h durante corrección activa\n• Si crónica (>48h): desmopresina de rescate si corrección excesiva\n• Evaluar causa: SIADH, depleción, dilucional`);}
   }
-  const k2=n("k");if(k2!==null&&k2<3.5&&wt!==null){const kDef=k2<2.5?600:k2<3?400:200;R.calc.push({l:"Déficit K⁺ estimado",v:`${kDef}-${kDef+200} mEq`,f:"Estimación clínica",c:"#f59e0b"});R.act.push(`Hipokalemia (K ${k2}): reposición ${k2<2.5?"URGENTE — riesgo arritmia":""}. KCl IV: máx 20mEq/h por vía periférica, 40mEq/h por CVC con monitoreo. VO preferido si tolera. Verificar Mg²⁺ (hipoMg impide corrección de K). Meta: K 4.0-4.5 mEq/L en paciente crítico`);}
-  if(hco3!==null&&ph!==null&&ph<=7.20&&hco3<15&&wt!==null){const biDef=0.5*wt*(15-hco3);R.calc.push({l:"Déficit HCO3⁻",v:`${biDef.toFixed(0)} mEq`,f:"0.5×Peso×(15−HCO3)",c:"#ef4444"});R.act.push(`Déficit HCO3 ~${biDef.toFixed(0)} mEq (meta HCO3 15, no normalizar). Si indicado (pH≤7.20+LRA per BICAR-ICU): NaHCO3 4.2%, 125-250mL/30min, repetir si pH<7.30, máx 1000mL/24h. BICAR-ICU 2: beneficio limitado a ↓TRR, sin ↓mortalidad`);}
+  const k2=n("k");
+  if(k2!==null&&wt!==null){
+    if(k2<3.5){const kDef=k2<2.5?800:k2<3?400:200;
+      R.calc.push({l:"Déficit K⁺ estimado",v:`${kDef}-${kDef+200} mEq`,f:"Estimación (cada ↓0.3 ≈ 100mEq déficit)",c:k2<2.5?"#ef4444":"#f59e0b"});
+      R.act.push(`HIPOKALEMIA (K⁺ ${k2}):\n${k2<2.5?"• ⚠ SEVERA — riesgo de arritmia ventricular, paro. Monitoreo cardíaco continuo\n":""}\n• KCl IV: máx 20 mEq/h por vía periférica (dolor/flebitis), 40 mEq/h por CVC con monitoreo ECG\n• Concentración máxima periférica: 40 mEq/L. CVC: hasta 80 mEq/L\n• VO preferido si tolera y K >2.5: KCl 40-80 mEq/día en dosis divididas\n• VERIFICAR Mg²⁺: hipomagnesemia impide corrección del K⁺ (corregir primero)\n• Meta UCI: K⁺ 4.0-4.5 mEq/L\n• Cada 10 mEq IV eleva K⁺ ~0.1 mEq/L (variabilidad alta)\n• Control K⁺ c/2-4h durante reposición agresiva`);}
+    if(k2>5.5){R.alerts.push({lv:k2>6.5?"critical":"warning",t:`Hiperkalemia K⁺ ${k2} mEq/L${k2>6.5?" — EMERGENCIA":""}`});
+      R.act.push(`HIPERKALEMIA (K⁺ ${k2}):\n${k2>6.5?"• ECG INMEDIATO (buscar ondas T picudas, QRS ancho, bradicardia)\n• Gluconato de calcio 10%: 10mL IV en 2-3min (estabiliza membrana cardíaca, NO baja K⁺)\n":""}• Insulina regular 10U + Dextrosa 50% 50mL IV (↓K⁺ 0.5-1.0 en 15-30min, dura 4-6h)\n• Salbutamol nebulizado 10-20mg (↓K⁺ 0.5-1.0 en 30min)\n• NaHCO3 solo si acidosis concomitante (efecto modesto)\n• Furosemida 40-80mg IV si función renal preservada\n• Kayexalato 30-60g VO/rectal (efecto en 4-6h, controversia)\n• Patiromer o SZC si disponible (evidencia más sólida que kayexalato)\n• Si refractaria: hemodiálisis urgente\n• Meta: K⁺ <5.5 mEq/L`);}
+  }
+  // Magnesium
+  const mg=n("mg");
+  if(mg!==null&&mg<1.8){R.calc.push({l:"Magnesio",v:`${mg} mg/dL`,f:"Directo",c:mg<1?"#ef4444":"#f59e0b"});
+    R.act.push(`HIPOMAGNESEMIA (Mg²⁺ ${mg}):\n${mg<1?"• SEVERA: riesgo arritmia (Torsade de Pointes), convulsiones\n• MgSO4 2-4g IV en 15-60min, seguido de 4-8g en 24h":"• MgSO4 1-2g IV en 1-2h, o Mg VO 400-800mg/día"}\n• Verificar K⁺ y Ca²⁺ (hipoMg causa hipoK e hipoCa refractarias)\n• Meta: Mg²⁺ >2.0 mg/dL en UCI\n• Control Mg c/6-12h durante reposición`);}
+  // Calcium (corrected for albumin)
+  const ca=n("ca");
+  if(ca!==null&&alb!==null){const caCorr=(ca+0.8*(4-alb)).toFixed(1);R.calc.push({l:"Ca²⁺ corregido (Alb)",v:`${caCorr} mg/dL`,f:`Ca+0.8×(4−Alb)`,c:caCorr<8?"#f59e0b":caCorr>10.5?"#f59e0b":"#22c55e"});
+    if(caCorr<8)R.act.push(`HIPOCALCEMIA corregida (${caCorr} mg/dL):\n• Sintomática (Chvostek, Trousseau, parestesias, convulsiones, QTc largo): gluconato de Ca 10% 10-20mL IV en 10-20min\n• Mantenimiento: gluconato Ca 10% 60mL en 500mL SG5% a 50mL/h\n• Preferir calcio iónico para guiar reposición en UCI\n• Corregir hipoMg concomitante\n• Evaluar causa: hipoparatiroidismo, sepsis, pancreatitis, transfusión masiva`);}
+  // Phosphate
+  const phos=n("phos");
+  if(phos!==null&&phos<2.5){R.calc.push({l:"Fósforo",v:`${phos} mg/dL`,f:"Directo",c:phos<1?"#ef4444":"#f59e0b"});
+    R.act.push(`HIPOFOSFATEMIA (P ${phos}):\n${phos<1?"• SEVERA: riesgo de insuficiencia respiratoria (debilidad diafragmática), rabdomiólisis, hemólisis\n• KPO4 o NaPO4 0.32-0.64 mmol/kg IV en 6h":"• Fosfato VO 500-1000mg/día o NaPO4 0.16-0.32 mmol/kg IV en 6h"}\n• Vigilar Ca²⁺ durante reposición (riesgo calcificación si P×Ca >70)\n• Común en: realimentación, cetoacidosis, sepsis, alcalosis resp`);}
+
+  if(hco3!==null&&ph!==null&&ph<=7.20&&hco3<15&&wt!==null){const biDef=0.5*wt*(15-hco3);R.calc.push({l:"Déficit HCO3⁻",v:`${biDef.toFixed(0)} mEq`,f:"0.5×Peso×(15−HCO3)",c:"#ef4444"});
+    R.act.push(`DÉFICIT DE BICARBONATO (~${biDef.toFixed(0)} mEq, meta HCO3 15, NO normalizar):\n• Si indicado (pH≤7.20 + LRA per BICAR-ICU): NaHCO3 4.2% (500 mEq/L)\n• Dosis: 125-250 mL en 30 min\n• Repetir si pH <7.30 a las 1-4h post-infusión\n• Máx 1000 mL (500 mEq) en 24h\n• BICAR-ICU 2 (JAMA 2025): beneficio limitado a ↓TRR, sin ↓mortalidad\n• ⚠ Riesgos: hipernatremia, hipocalcemia, alcalosis de rebote\n• Monitorizar: pH, Na⁺, Ca²⁺ iónico, K⁺ c/2-4h`);}
 
   R.refs=[...new Set(R.refs)];return R;}
 
@@ -203,7 +255,7 @@ const REFS_DATA=[
 /* ═══ MAIN COMPONENT ═══ */
 function CritCareBedside(){
   const [tab,setTab]=useState("calc");const [expA,setExpA]=useState(null);
-  const init={sbp:"",dbp:"",hr:"",spo2:"",fio2:"21",pao2:"",temp:"",lactate:"",weight:"",crt:"",ph:"",paco2:"",hco3:"",na:"",cl:"",alb:"",be:"",beSign:"+",pplat:"",peep:"",ppeak:"",vt:"",rr:"",height:"",sex:"m",ards:"no",altitude:"760",customPatm:"",age:"",crBasal:"",crCurrent:"",crTimeWindow:"48h",renalUOP:"",uopPeriod:"1h",htn:"no",shock:"none",sepsisLevel:"no",akiPresent:"no",plt:"",bil:"",gcs:"",k:"",hct:"",wbc:"",delirium:"no",neDose:"",epiDose:"",otherVP:"no",mechCV:"no",ventSupport:"none",ecmoResp:"no",rrt:"no",biomarker:"none",apacheChronic:"no",ventMode:"volume"};
+  const init={sbp:"",dbp:"",hr:"",spo2:"",fio2:"21",pao2:"",temp:"",lactate:"",weight:"",crt:"",ph:"",paco2:"",hco3:"",na:"",cl:"",alb:"",be:"",beSign:"+",pplat:"",peep:"",ppeak:"",vt:"",rr:"",height:"",sex:"m",ards:"no",altitude:"760",customPatm:"",age:"",crBasal:"",crCurrent:"",crTimeWindow:"48h",renalUOP:"",uopPeriod:"1h",htn:"no",shock:"none",sepsisLevel:"no",akiPresent:"no",plt:"",bil:"",gcs:"",k:"",hct:"",wbc:"",delirium:"no",neDose:"",epiDose:"",otherVP:"no",mechCV:"no",ventSupport:"none",ecmoResp:"no",rrt:"no",biomarker:"none",apacheChronic:"no",ventMode:"volume",inspFlow:"",pOverPeep:"",mg:"",ca:"",phos:""};
   const [v,setV]=useState(init);const [res,setRes]=useState(null);const rRef=useRef(null);
   const u=(k,val)=>setV(p=>({...p,[k]:val}));
   const run=()=>{setRes(calculate(v));setTimeout(()=>rRef.current?.scrollIntoView({behavior:"smooth"}),100);};
@@ -237,13 +289,35 @@ function CritCareBedside(){
           {/* OXYGENATION */}
           <div style={S.sec}><div style={S.secT}><span>🫁</span> Oxigenación</div><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="SpO2" unit="%" value={v.spo2} onChange={x=>u("spo2",x)} placeholder="95"/><NI label="FiO2" unit="%" value={v.fio2} onChange={x=>u("fio2",x)} placeholder="21"/><NI label="PaO2" unit="mmHg" value={v.pao2} onChange={x=>u("pao2",x)} placeholder="80"/></div><DD label="Altitud" value={v.altitude} onChange={x=>u("altitude",x)} options={ALTS} style={{width:"100%",flex:"1 1 100%"}}/>{v.altitude==="custom"&&<NI label="Patm" unit="mmHg" value={v.customPatm} onChange={x=>u("customPatm",x)} placeholder="760"/>}</div>
           {/* VENT MECHANICS */}
-          <div style={S.sec}><div style={S.secT}><span>🌬️</span> Mecánica ventilatoria</div><OS label="Modalidad" value={v.ventMode} onChange={x=>u("ventMode",x)} options={[{l:"Volumen controlado",v:"volume"},{l:"Presión controlada",v:"pressure"}]}/><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="Pplat" unit="cmH₂O" value={v.pplat} onChange={x=>u("pplat",x)} placeholder="25"/><NI label="PEEP" unit="cmH₂O" value={v.peep} onChange={x=>u("peep",x)} placeholder="10"/><NI label="Ppico" unit="cmH₂O" value={v.ppeak} onChange={x=>u("ppeak",x)} placeholder="30"/><NI label="Vt" unit="mL" value={v.vt} onChange={x=>u("vt",x)} placeholder="420"/><NI label="FR" unit="rpm" value={v.rr} onChange={x=>u("rr",x)} placeholder="16"/></div></div>
+          <div style={S.sec}><div style={S.secT}><span>🌬️</span> Mecánica ventilatoria</div>
+            <OS label="Modalidad" value={v.ventMode} onChange={x=>u("ventMode",x)} options={[{l:"Volumen controlado (VCV)",v:"volume"},{l:"Presión controlada (PCV)",v:"pressure"}]}/>
+            <div style={{padding:"8px 10px",borderRadius:8,background:"rgba(59,130,246,0.06)",border:"1px solid rgba(59,130,246,0.12)",marginBottom:10}}>
+              <p style={{fontSize:10.5,color:"#7aaccc",margin:0,lineHeight:1.5}}>{v.ventMode==="volume"?"📌 VCV: Vt y FR son FIJOS (programados). Pplat se MIDE (pausa inspiratoria). Ppico es RESULTANTE.":"📌 PCV: Presión sobre PEEP y FR son FIJOS. Vt es RESULTANTE (depende de compliance). Ppico ≈ Pplat."}</p>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}>
+              {v.ventMode==="volume"?<>
+                <NI label="Vt programado" unit="mL" value={v.vt} onChange={x=>u("vt",x)} placeholder="420"/>
+                <NI label="FR programada" unit="rpm" value={v.rr} onChange={x=>u("rr",x)} placeholder="16"/>
+                <NI label="Pplat (medida)" unit="cmH₂O" value={v.pplat} onChange={x=>u("pplat",x)} placeholder="25"/>
+                <NI label="Ppico (medida)" unit="cmH₂O" value={v.ppeak} onChange={x=>u("ppeak",x)} placeholder="30"/>
+                <NI label="PEEP" unit="cmH₂O" value={v.peep} onChange={x=>u("peep",x)} placeholder="10"/>
+                <NI label="Flujo insp." unit="L/min" value={v.inspFlow} onChange={x=>u("inspFlow",x)} placeholder="60"/>
+              </>:<>
+                <NI label="P sobre PEEP (ΔP prog.)" unit="cmH₂O" value={v.pOverPeep} onChange={x=>u("pOverPeep",x)} placeholder="15"/>
+                <NI label="FR programada" unit="rpm" value={v.rr} onChange={x=>u("rr",x)} placeholder="16"/>
+                <NI label="PEEP" unit="cmH₂O" value={v.peep} onChange={x=>u("peep",x)} placeholder="10"/>
+                <NI label="Vt resultante" unit="mL" value={v.vt} onChange={x=>u("vt",x)} placeholder="420"/>
+                <NI label="Ppico (medida)" unit="cmH₂O" value={v.ppeak} onChange={x=>u("ppeak",x)} placeholder="25"/>
+                <NI label="Pplat (si medida)" unit="cmH₂O" value={v.pplat} onChange={x=>u("pplat",x)} placeholder=""/>
+              </>}
+            </div>
+          </div>
           {/* ACID-BASE */}
           <div style={S.sec}><div style={S.secT}><span>🧪</span> Gasometría</div><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="pH" value={v.ph} onChange={x=>u("ph",x)} placeholder="7.40"/><NI label="PaCO2" unit="mmHg" value={v.paco2} onChange={x=>u("paco2",x)} placeholder="40"/><NI label="HCO3" unit="mEq/L" value={v.hco3} onChange={x=>u("hco3",x)} placeholder="24"/><NI label="Na⁺" unit="mEq/L" value={v.na} onChange={x=>u("na",x)} placeholder="140"/><NI label="K⁺" unit="mEq/L" value={v.k} onChange={x=>u("k",x)} placeholder="4.0"/><NI label="Cl⁻" unit="mEq/L" value={v.cl} onChange={x=>u("cl",x)} placeholder="102"/><NI label="Albúmina" unit="g/dL" value={v.alb} onChange={x=>u("alb",x)} placeholder="4.0"/></div><div style={{display:"flex",gap:6,alignItems:"flex-end",flexWrap:"wrap"}}><NI label="BE" unit="mEq/L" value={v.be} onChange={x=>u("be",x)} placeholder="0" style={{flex:"1 1 60%"}}/><div style={{marginBottom:8}}><label style={S.label}>Signo</label><div style={{display:"flex",gap:3}}>{["+","-"].map(s=><button key={s} onClick={()=>u("beSign",s)} style={{padding:"10px 14px",borderRadius:8,border:v.beSign===s?"1px solid rgba(22,78,99,0.6)":"1px solid rgba(60,140,170,0.1)",background:v.beSign===s?"rgba(22,78,99,0.3)":"rgba(15,30,50,0.35)",color:v.beSign===s?"#a0d8ec":"#6a8a9a",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'JetBrains Mono'"}}>{s}</button>)}</div></div></div></div>
           {/* RENAL */}
           <div style={S.sec}><div style={S.secT}><span>🫘</span> Renal — KDIGO 2026</div><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="Cr basal" unit="mg/dL" value={v.crBasal} onChange={x=>u("crBasal",x)} placeholder="0.9"/><NI label="Cr actual" unit="mg/dL" value={v.crCurrent} onChange={x=>u("crCurrent",x)} placeholder="1.8"/></div><DD label="Ventana temporal Cr" value={v.crTimeWindow} onChange={x=>u("crTimeWindow",x)} options={[{v:"48h",l:"≤48h (criterio ≥0.3 mg/dL)"},{v:"7d",l:"≤7 días (criterio ≥1.5×)"},{v:"unknown",l:"Desconocida"}]} style={{width:"100%",flex:"1 1 100%"}}/><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="Diuresis" unit="mL" value={v.renalUOP} onChange={x=>u("renalUOP",x)} placeholder="50" style={{flex:"1 1 55%"}}/><DD label="Período" value={v.uopPeriod} onChange={x=>u("uopPeriod",x)} options={[{v:"1h",l:"1 hora"},{v:"6h",l:"6h"},{v:"8h",l:"8h"},{v:"24h",l:"24h"}]}/></div><DD label="Biomarcador daño (eje B)" value={v.biomarker} onChange={x=>u("biomarker",x)} options={BIO_OPTS} style={{width:"100%",flex:"1 1 100%"}}/><OS label="En TRR" value={v.rrt} onChange={x=>u("rrt",x)} options={[{l:"No",v:"no"},{l:"Sí",v:"yes"}]}/></div>
           {/* LABS */}
-          <div style={S.sec}><div style={S.secT}><span>🔬</span> Laboratorios (SOFA-2/APACHE)</div><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="Plaquetas" unit="×10³" value={v.plt} onChange={x=>u("plt",x)} placeholder="200"/><NI label="Bilirrubina" unit="mg/dL" value={v.bil} onChange={x=>u("bil",x)} placeholder="0.8"/><NI label="Hto" unit="%" value={v.hct} onChange={x=>u("hct",x)} placeholder="40"/><NI label="Leucocitos" unit="×10³" value={v.wbc} onChange={x=>u("wbc",x)} placeholder="8"/><NI label="GCS" unit="3-15" value={v.gcs} onChange={x=>u("gcs",x)} placeholder="15"/></div></div>
+          <div style={S.sec}><div style={S.secT}><span>🔬</span> Laboratorios (SOFA-2/APACHE/Electrolitos)</div><div style={{display:"flex",flexWrap:"wrap",gap:"0 10px"}}><NI label="Plaquetas" unit="×10³" value={v.plt} onChange={x=>u("plt",x)} placeholder="200"/><NI label="Bilirrubina" unit="mg/dL" value={v.bil} onChange={x=>u("bil",x)} placeholder="0.8"/><NI label="Hto" unit="%" value={v.hct} onChange={x=>u("hct",x)} placeholder="40"/><NI label="Leucocitos" unit="×10³" value={v.wbc} onChange={x=>u("wbc",x)} placeholder="8"/><NI label="GCS" unit="3-15" value={v.gcs} onChange={x=>u("gcs",x)} placeholder="15"/><NI label="Mg²⁺" unit="mg/dL" value={v.mg} onChange={x=>u("mg",x)} placeholder="2.0"/><NI label="Ca²⁺ total" unit="mg/dL" value={v.ca} onChange={x=>u("ca",x)} placeholder="9.0"/><NI label="Fósforo" unit="mg/dL" value={v.phos} onChange={x=>u("phos",x)} placeholder="3.5"/></div></div>
           {/* CONTEXT */}
           <div style={S.sec}><div style={S.secT}><span>📋</span> Contexto clínico</div><OS label="HTA crónica" value={v.htn} onChange={x=>u("htn",x)} options={[{l:"No",v:"no"},{l:"Sí",v:"yes"}]}/><DD label="Infección/Sepsis (SSC 2026)" value={v.sepsisLevel} onChange={x=>u("sepsisLevel",x)} options={[{v:"no",l:"Sin sospecha"},{v:"possible",l:"Posible"},{v:"probable",l:"Probable"},{v:"definite",l:"Definitiva"}]} style={{width:"100%",flex:"1 1 100%"}}/><OS label="LRA (AKIN 2-3)" value={v.akiPresent} onChange={x=>u("akiPresent",x)} options={[{l:"No",v:"no"},{l:"Sí",v:"yes"}]}/><DD label="Tipo de choque" value={v.shock} onChange={x=>u("shock",x)} options={SHOCK_OPTS} style={{width:"100%",flex:"1 1 100%"}}/><OS label="Enf. crónica severa (APACHE)" value={v.apacheChronic} onChange={x=>u("apacheChronic",x)} options={[{l:"No",v:"no"},{l:"Sí",v:"yes"}]}/></div>
 
@@ -287,7 +361,6 @@ function CritCareBedside(){
   );
 }
 
-// Mount the app
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(CritCareBedside));
   </script>
